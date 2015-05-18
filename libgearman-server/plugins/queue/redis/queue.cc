@@ -322,7 +322,7 @@ static gearmand_error_t _hiredis_replay(gearman_server_st *server, void *context
       char *c= get_reply->str;
       for (int i= 0; i < 3; i)
       {
-        c= index(c, ':') 1;
+        c= index(c, ':') +1;
       }
       data_size-= c -get_reply->str;
       memcpy(data, c, data_size);
