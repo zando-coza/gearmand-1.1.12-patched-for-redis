@@ -1,0 +1,296 @@
+***************
+*** 93,98 ****
+  
+    std::string server;
+    std::string service;
+  
+  private:
+    redisContext *_redis;
+--- 93,99 ----
+  
+    std::string server;
+    std::string service;
++   std::string password;
+  
+  private:
+    redisContext *_redis;
+***************
+*** 102,112 ****
+    Queue("redis"),
+    server("127.0.0.1"),
+    service("6379"),
+    _redis(NULL)
+  {
+    command_line_options().add_options()
+      ("redis-server", boost::program_options::value(&server), "Redis server")
+-     ("redis-port", boost::program_options::value(&service), "Redis server port/service");
+  }
+  
+  Hiredis::~Hiredis()
+--- 103,115 ----
+    Queue("redis"),
+    server("127.0.0.1"),
+    service("6379"),
++   password(""),
+    _redis(NULL)
+  {
+    command_line_options().add_options()
+      ("redis-server", boost::program_options::value(&server), "Redis server")
++     ("redis-port", boost::program_options::value(&service), "Redis server port/service")
++     ("redis-password", boost::program_options::value(&password), "Redis server password");
+  }
+  
+  Hiredis::~Hiredis()
+***************
+*** 116,125 ****
+  gearmand_error_t Hiredis::initialize()
+  {
+    int service_port= atoi(service.c_str());
+-   if ((_redis= redisConnect("127.0.0.1", service_port)) == NULL)
+    {
+      return gearmand_gerror("Could not connect to redis server", GEARMAND_QUEUE_ERROR);
+    }
+  
+    gearmand_info("Initializing hiredis module");
+  
+--- 119,138 ----
+  gearmand_error_t Hiredis::initialize()
+  {
+    int service_port= atoi(service.c_str());
++   if ((_redis= redisConnect(server.c_str(), service_port)) == NULL)
+    {
+      return gearmand_gerror("Could not connect to redis server", GEARMAND_QUEUE_ERROR);
+    }
++   if (password.size())
++   {
++     redisReply *reply= (redisReply*)redisCommand(_redis, "AUTH %s", password.c_str());
++     if (reply == NULL)
++     {
++       return gearmand_gerror("Could not auth with redis server", GEARMAND_QUEUE_ERROR);
++     }
++     gearmand_log_debug(GEARMAN_DEFAULT_LOG_PARAM, "hires auth reply: %.*s", (uint32_t)reply->len, reply->str);
++     freeReplyObject(reply);
++   }
+  
+    gearmand_info("Initializing hiredis module");
+  
+***************
+*** 140,146 ****
+  typedef std::vector<char> vchar_t;
+  #define GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX "_gear_"
+  #define GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX_SIZE sizeof(GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX)
+- #define GEARMAND_KEY_LITERAL "%s-%.*s-%*s"
+  
+  static size_t build_key(vchar_t &key,
+                          const char *unique,
+--- 153,159 ----
+  typedef std::vector<char> vchar_t;
+  #define GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX "_gear_"
+  #define GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX_SIZE sizeof(GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX)
++ #define GEARMAND_KEY_LITERAL "%s %.*s %.*s"
+  
+  static size_t build_key(vchar_t &key,
+                          const char *unique,
+***************
+*** 148,154 ****
+                          const char *function_name,
+                          size_t function_name_size)
+  {
+-   key.resize(function_name_size +unique_size +GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX_SIZE +4);
+    int key_size= snprintf(&key[0], key.size(), GEARMAND_KEY_LITERAL,
+                           GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX,
+                           (int)function_name_size, function_name,
+--- 161,167 ----
+                          const char *function_name,
+                          size_t function_name_size)
+  {
++   key.resize(function_name_size +unique_size +GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX_SIZE +2);
+    int key_size= snprintf(&key[0], key.size(), GEARMAND_KEY_LITERAL,
+                           GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX,
+                           (int)function_name_size, function_name,
+***************
+*** 186,213 ****
+                                       const char *function_name,
+                                       size_t function_name_size,
+                                       const void *data, size_t data_size,
+-                                      gearman_job_priority_t,
+                                       int64_t when)
+  {
+    gearmand::plugins::queue::Hiredis *queue= (gearmand::plugins::queue::Hiredis *)context;
+  
+-   if (when) // No support for EPOCH jobs
+-   {
+-     return GEARMAND_QUEUE_ERROR;
+-   }
+- 
+    gearmand_log_debug(GEARMAN_DEFAULT_LOG_PARAM, "hires add: %.*s", (uint32_t)unique_size, (char *)unique);
+  
+    std::vector<char> key;
+    build_key(key, unique, unique_size, function_name, function_name_size);
+    gearmand_log_debug(GEARMAN_DEFAULT_LOG_PARAM, "hires key: %u", (uint32_t)key.size());
+  
+-   redisReply *reply= (redisReply*)redisCommand(queue->redis(), "SET %b %b", &key[0], key.size(), data, data_size);
+-   gearmand_log_debug(GEARMAN_DEFAULT_LOG_PARAM, "got reply");
+    if (reply == NULL)
+    {
+-     return gearmand_log_gerror(GEARMAN_DEFAULT_LOG_PARAM, GEARMAND_QUEUE_ERROR, "failed to insert '%.*s' into redis", key.size(), &key[0]);
+    }
+    freeReplyObject(reply);
+  
+    return GEARMAND_SUCCESS;
+--- 199,221 ----
+                                       const char *function_name,
+                                       size_t function_name_size,
+                                       const void *data, size_t data_size,
++                                      gearman_job_priority_t priority,
+                                       int64_t when)
+  {
+    gearmand::plugins::queue::Hiredis *queue= (gearmand::plugins::queue::Hiredis *)context;
+  
+    gearmand_log_debug(GEARMAN_DEFAULT_LOG_PARAM, "hires add: %.*s", (uint32_t)unique_size, (char *)unique);
+  
+    std::vector<char> key;
+    build_key(key, unique, unique_size, function_name, function_name_size);
+    gearmand_log_debug(GEARMAN_DEFAULT_LOG_PARAM, "hires key: %u", (uint32_t)key.size());
+  
++   redisReply *reply= (redisReply*)redisCommand(queue->redis(), "SET %b p:%hu,w:%lu,d:%b", &key[0], key.size(), (uint16_t)priority, when, data, data_size);
+    if (reply == NULL)
+    {
++     return gearmand_log_gerror(GEARMAN_DEFAULT_LOG_PARAM, GEARMAND_QUEUE_ERROR, "hires failed to insert '%.*s' into redis", key.size(), &key[0]);
+    }
++   gearmand_log_debug(GEARMAN_DEFAULT_LOG_PARAM, "hires queue reply: %.*s", (uint32_t)reply->len, reply->str);
+    freeReplyObject(reply);
+  
+    return GEARMAND_SUCCESS;
+***************
+*** 252,300 ****
+     
+    gearmand_info("hiredis replay start");
+  
+-   redisReply *reply= (redisReply*)redisCommand(queue->redis(), "KEYS %s", GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX);
+    if (reply == NULL)
+    {
+      return gearmand_gerror("Failed to call KEYS during QUEUE replay", GEARMAND_QUEUE_ERROR);
+    }
+  
+    for (size_t x= 0; x < reply->elements; x++)
+    {
+-     char prefix[GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX_SIZE];
+-     char function_name[GEARMAN_FUNCTION_MAX_SIZE];
+-     char unique[GEARMAN_MAX_UNIQUE_SIZE];
+- 
+-     char fmt_str[100] = "";    
+-     int fmt_str_length= snprintf(fmt_str, sizeof(fmt_str), "%%%ds-%%%ds-%%%ds",
+-                                  int(GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX_SIZE),
+-                                  int(GEARMAN_FUNCTION_MAX_SIZE),
+-                                  int(GEARMAN_MAX_UNIQUE_SIZE));
+-     if (fmt_str_length <= 0 or size_t(fmt_str_length) >= sizeof(fmt_str))
+-     {
+-       assert(fmt_str_length != 1);
+-       return gearmand_gerror("snprintf() failed to produce a valud fmt_str for redis key", GEARMAND_QUEUE_ERROR);
+-     }
+      int ret= sscanf(reply->element[x]->str,
+                      fmt_str,
+                      prefix,
+                      function_name,
+                      unique);
+-     if (ret == 0)
+      {
+        continue;
+      }
+  
+-     redisReply *get_reply= (redisReply*)redisCommand(queue->redis(), "GET %s", reply->element[x]->str);
+      if (get_reply == NULL)
+      {
+        continue;
+      }
+  
+      (void)(add_fn)(server, add_context,
+                     unique, strlen(unique),
+                     function_name, strlen(function_name),
+-                    get_reply->str, get_reply->len,
+-                    GEARMAN_JOB_PRIORITY_NORMAL, 0);
+      freeReplyObject(get_reply);
+    }
+  
+--- 260,339 ----
+     
+    gearmand_info("hiredis replay start");
+  
++   redisReply *reply= (redisReply*)redisCommand(queue->redis(), "KEYS %s*", GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX);
+    if (reply == NULL)
+    {
+      return gearmand_gerror("Failed to call KEYS during QUEUE replay", GEARMAND_QUEUE_ERROR);
+    }
++   gearmand_log_info(GEARMAN_DEFAULT_LOG_PARAM, "hires keys: %u", reply->elements);
++ 
++   char fmt_str[16] = "";
++   int fmt_str_length= snprintf(fmt_str, sizeof(fmt_str), "%%%ds%%%ds%%%ds",
++                                int(GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX_SIZE),
++                                int(GEARMAN_FUNCTION_MAX_SIZE),
++                                int(GEARMAN_MAX_UNIQUE_SIZE));
++   if (fmt_str_length <= 0 or size_t(fmt_str_length) >= sizeof(fmt_str))
++   {
++     assert(fmt_str_length != 1);
++     return gearmand_gerror("snprintf() failed to produce a valud fmt_str for redis key", GEARMAND_QUEUE_ERROR);
++   }
++   gearmand_log_debug(GEARMAN_DEFAULT_LOG_PARAM, "hires fmt_str: %s", fmt_str);
+  
+    for (size_t x= 0; x < reply->elements; x++)
+    {
++     char prefix[GEARMAND_QUEUE_GEARMAND_DEFAULT_PREFIX_SIZE] = "";
++     char function_name[GEARMAN_FUNCTION_MAX_SIZE] = "";
++     char unique[GEARMAN_MAX_UNIQUE_SIZE] = "";
+      int ret= sscanf(reply->element[x]->str,
+                      fmt_str,
+                      prefix,
+                      function_name,
+                      unique);
++     gearmand_log_debug(GEARMAN_DEFAULT_LOG_PARAM, "hires key prefix: %s, function_name: %s, unique: %s", prefix, function_name, unique);
++     if (ret == 0 or strlen(function_name) == 0 or strlen(unique) == 0)
+      {
+        continue;
+      }
+  
++     gearmand_log_debug(GEARMAN_DEFAULT_LOG_PARAM, "hires get: %.*s", strlen(unique), unique);
++     redisReply *get_reply= (redisReply*)redisCommand(queue->redis(), "GET %b", reply->element[x]->str, reply->element[x]->len);
+      if (get_reply == NULL)
+      {
++       gearmand_log_warning(GEARMAN_DEFAULT_LOG_PARAM, "hires failed to get '%.*s' from redis", reply->element[x]->len, reply->element[x]->str);
+        continue;
+      }
+  
++     size_t data_size= get_reply->len;
++     char *data= (char *)malloc(data_size);
++     if (data == NULL)
++     {
++       return gearmand_perror(errno, "malloc failed");
++     }
++ 
++     uint16_t priority= (uint16_t)GEARMAN_JOB_PRIORITY_NORMAL;
++     uint64_t when= 0;
++     ret= sscanf(get_reply->str, "p:%hu,w:%lu,d:", &priority, &when);
++     if (ret == 2)
++     {
++       char *c= get_reply->str;
++       for (int i= 0; i < 3; i++)
++       {
++         c= index(c, ':') +1;
++       }
++       data_size-= c -get_reply->str;
++       memcpy(data, c, data_size);
++     }
++     else
++     {
++       memcpy(data, get_reply->str, data_size);
++     }
++     gearmand_log_debug(GEARMAN_DEFAULT_LOG_PARAM, "hires value priority: %hu, when: %lu, data_size: %u, data: %.*s", priority, when, data_size, data_size, data);
++ 
+      (void)(add_fn)(server, add_context,
+                     unique, strlen(unique),
+                     function_name, strlen(function_name),
++                    data, data_size,
++                    (gearman_job_priority_t)priority, when);
+      freeReplyObject(get_reply);
+    }
+  
